@@ -24,12 +24,13 @@ final class OverlayWindow: NSPanel {
 }
 
 /// One screenshot in progress: an overlay per screen, a single selection across them.
-final class CaptureSession {
+final class CaptureSession: NSObject, NSSharingServicePickerDelegate {
     static private(set) var current: CaptureSession?
 
     private var windows: [OverlayWindow] = []
     private var canvases: [CanvasView] = []
     private let previousApp: NSRunningApplication?
+    private var sharePicker: NSSharingServicePicker?
 
     static func start(shots: [Shot], previousApp: NSRunningApplication?) {
         let session = CaptureSession(shots: shots, previousApp: previousApp)
@@ -62,6 +63,7 @@ final class CaptureSession {
             windows.append(window)
             canvases.append(canvas)
         }
+        super.init()
     }
 
     private func show() {
@@ -119,9 +121,7 @@ final class CaptureSession {
         panel.allowedContentTypes = [.png, .jpeg]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd 'в' HH.mm.ss"
-        panel.nameFieldStringValue = "Снимок экрана \(formatter.string(from: Date())).png"
+        panel.nameFieldStringValue = CaptureSession.defaultFileName()
         if panel.directoryURL == nil {
             panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
         }
@@ -140,6 +140,43 @@ final class CaptureSession {
             }
         }
         restoreFocus()
+    }
+
+    /// Shows the system share picker under `anchor`; the overlay stays up until a service is chosen.
+    func share(_ rep: NSBitmapImageRep, from anchor: NSView) {
+        // A file with a readable name, not a bare image: messengers and Mail keep the name and the PNG as is.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ShotMark", isDirectory: true)
+        let url = dir.appendingPathComponent(CaptureSession.defaultFileName())
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try rep.representation(using: .png, properties: [:])?.write(to: url)
+        } catch {
+            NSAlert(error: error).runModal()
+            return
+        }
+        // The picker is a menu/popover: it would open under a screen-saver-level window.
+        for window in windows { window.level = .statusBar }
+        let picker = NSSharingServicePicker(items: [url])
+        picker.delegate = self
+        sharePicker = picker
+        picker.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker, didChoose service: NSSharingService?) {
+        sharePicker = nil
+        if service == nil {
+            // Dismissed: back to editing.
+            for window in windows { window.level = .screenSaver }
+            return
+        }
+        // The service brings up its own window (AirDrop, Messages, Mail…); it must not end up under the overlay.
+        close()
+    }
+
+    private static func defaultFileName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'в' HH.mm.ss"
+        return "Снимок экрана \(formatter.string(from: Date())).png"
     }
 
     private func close() {

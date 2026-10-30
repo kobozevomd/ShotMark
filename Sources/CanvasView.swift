@@ -45,6 +45,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
     private var actionsBar: ToolbarView!
     private var toolButtons: [Tool: ToolbarButton] = [:]
     private var colorButton: ToolbarButton!
+    private var shareButton: ToolbarButton!
     private var palette: ToolbarView?
 
     private var widthHint: (point: CGPoint, until: Date)?
@@ -83,9 +84,11 @@ final class CanvasView: NSView, NSTextViewDelegate {
         })
         toolsBar = ToolbarView(items: items, vertical: true)
 
+        shareButton = ToolbarButton(symbol: "square.and.arrow.up", tooltip: "Поделиться") { [weak self] in self?.share() }
         actionsBar = ToolbarView(items: [
             ToolbarButton(symbol: "doc.on.doc", tooltip: "Копировать (⌘C)") { [weak self] in self?.copyToClipboard() },
             ToolbarButton(symbol: "square.and.arrow.down", tooltip: "Сохранить (⌘S)") { [weak self] in self?.saveToFile() },
+            shareButton,
             ToolbarView.separator(),
             ToolbarButton(symbol: "xmark", tooltip: "Закрыть (Esc)") { [weak self] in self?.session?.cancel() },
         ], vertical: false)
@@ -653,6 +656,12 @@ final class CanvasView: NSView, NSTextViewDelegate {
         commitText()
         guard let rep = render(selection ?? bounds) else { return }
         session?.save(rep)
+    }
+
+    private func share() {
+        commitText()
+        guard let rep = render(selection ?? bounds) else { return }
+        session?.share(rep, from: shareButton)
     }
 
     /// Crops the screenshot to `region` at full pixel resolution and burns the annotations in.
