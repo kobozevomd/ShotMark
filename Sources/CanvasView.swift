@@ -46,6 +46,40 @@ final class CanvasView: NSView, NSTextViewDelegate {
     private var toolButtons: [Tool: ToolbarButton] = [:]
     private var colorButton: ToolbarButton!
     private var shareButton: ToolbarButton!
+    private var processingView: NSView?
+    private var isProcessing: Bool { processingView != nil }
+
+    func setProcessing(_ message: String?) {
+        processingView?.removeFromSuperview()
+        processingView = nil
+        guard let message else { return }
+        commitText()
+        let label = NSTextField(labelWithString: message)
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.sizeToFit()
+        let panel = NSVisualEffectView(frame: NSRect(x: bounds.midX - (label.frame.width + 60) / 2,
+            y: bounds.midY - 22, width: label.frame.width + 60, height: 44))
+        panel.material = .hudWindow
+        panel.state = .active
+        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.maskImage = ToolbarView.roundedMask(radius: 9)
+        let spinner = NSProgressIndicator(frame: NSRect(x: 12, y: 12, width: 20, height: 20))
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.startAnimation(nil)
+        label.frame.origin = NSPoint(x: 40, y: 13)
+        panel.addSubview(spinner)
+        panel.addSubview(label)
+        addSubview(panel)
+        processingView = panel
+        window?.makeFirstResponder(self)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if isProcessing { return frame.contains(point) ? self : nil }
+        return super.hitTest(point)
+    }
     private var palette: ToolbarView?
 
     private var widthHint: (point: CGPoint, until: Date)?
@@ -89,6 +123,8 @@ final class CanvasView: NSView, NSTextViewDelegate {
             ToolbarButton(symbol: "doc.on.doc", tooltip: "Копировать (⌘C)") { [weak self] in self?.copyToClipboard() },
             ToolbarButton(symbol: "square.and.arrow.down", tooltip: "Сохранить (⌘S)") { [weak self] in self?.saveToFile() },
             shareButton,
+            ToolbarButton(symbol: "link", tooltip: "Загрузить на Catbox и скопировать ссылку (⇧⌘C)") { [weak self] in self?.shareLink() },
+            ToolbarButton(symbol: "text.viewfinder", tooltip: "Распознать и скопировать текст (⇧⌘T)") { [weak self] in self?.recognizeText() },
             ToolbarView.separator(),
             ToolbarButton(symbol: "xmark", tooltip: "Закрыть (Esc)") { [weak self] in self?.session?.cancel() },
         ], vertical: false)
@@ -352,6 +388,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard !isProcessing else { return }
         let p = clamp(convert(event.locationInWindow, from: nil))
         window?.makeFirstResponder(self)
         lastDragPoint = p
@@ -397,6 +434,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard !isProcessing else { return }
         let raw = convert(event.locationInWindow, from: nil)
         lastDragPoint = raw
         applyDrag(to: raw, shift: event.modifierFlags.contains(.shift))
@@ -442,6 +480,7 @@ final class CanvasView: NSView, NSTextViewDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard !isProcessing else { return }
         switch drag {
         case .creating:
             if let sel = selection, sel.width >= 4, sel.height >= 4 {
@@ -469,12 +508,14 @@ final class CanvasView: NSView, NSTextViewDelegate {
     }
 
     override func flagsChanged(with event: NSEvent) {
+        guard !isProcessing else { return }
         if case .drawing = drag {
             applyDrag(to: lastDragPoint, shift: event.modifierFlags.contains(.shift))
         }
     }
 
     override func scrollWheel(with event: NSEvent) {
+        guard !isProcessing else { return }
         scrollAccumulator += event.scrollingDeltaY
         let threshold: CGFloat = event.hasPreciseScrollingDeltas ? 6 : 0.5
         guard abs(scrollAccumulator) >= threshold else { return }
@@ -583,6 +624,15 @@ final class CanvasView: NSView, NSTextViewDelegate {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
+        if isProcessing { return flags.contains(.command) }
+        if flags == [.command, .shift], event.keyCode == 8 {
+            shareLink()
+            return true
+        }
+        if flags == [.command, .shift], event.keyCode == 17 {
+            recognizeText()
+            return true
+        }
         guard flags == .command else { return super.performKeyEquivalent(with: event) }
         // Key codes, not characters, so it works on the Russian layout.
         switch event.keyCode {
@@ -602,6 +652,10 @@ final class CanvasView: NSView, NSTextViewDelegate {
     }
 
     override func keyDown(with event: NSEvent) {
+        if isProcessing {
+            if event.keyCode == 53 { session?.cancel() }
+            return
+        }
         let flags = event.modifierFlags.intersection([.command, .option, .control])
         switch event.keyCode {
         case 53: // Esc
@@ -662,6 +716,25 @@ final class CanvasView: NSView, NSTextViewDelegate {
         commitText()
         guard let rep = render(selection ?? bounds) else { return }
         session?.share(rep, from: shareButton)
+    }
+
+    private func shareLink() {
+        guard !isProcessing, let region = selection else { return }
+        commitText()
+        guard let rep = render(region) else { return }
+        let screenRect = window.map { $0.convertToScreen(convert(region, to: nil)) } ?? region
+        session?.shareLink(rep, screenRect: screenRect)
+    }
+
+    private func recognizeText() {
+        guard !isProcessing, let region = selection else { return }
+        commitText()
+        // OCR uses the original pixels: arrows and highlights must not obscure letters.
+        let pixels = CGRect(x: region.minX * scale, y: (bounds.height - region.maxY) * scale,
+                            width: region.width * scale, height: region.height * scale)
+        guard let cropped = image.cropping(to: pixels) else { return }
+        let screenRect = window.map { $0.convertToScreen(convert(region, to: nil)) } ?? region
+        session?.recognizeText(cropped, screenRect: screenRect)
     }
 
     /// Crops the screenshot to `region` at full pixel resolution and burns the annotations in.

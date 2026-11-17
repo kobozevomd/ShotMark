@@ -131,6 +131,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ⇧⌘9 — сделать скриншот
         ⌘C или Enter — скопировать в буфер обмена
         ⌘S — сохранить в файл
+        ⇧⌘C — загрузить PNG на Catbox и скопировать ссылку
+        ⇧⌘T — распознать текст локально и скопировать
         ⌘Z — отменить последнее действие
         Esc — закрыть
 

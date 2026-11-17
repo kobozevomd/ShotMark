@@ -31,6 +31,100 @@ final class CaptureSession: NSObject, NSSharingServicePickerDelegate {
     private var canvases: [CanvasView] = []
     private let previousApp: NSRunningApplication?
     private var sharePicker: NSSharingServicePicker?
+    private var uploadTask: URLSessionDataTask?
+    private var processing = false
+
+    private func setProcessing(_ message: String?) {
+        processing = message != nil
+        canvases.forEach { $0.setProcessing(message) }
+    }
+
+    /// Modal dialogs must appear above the capture overlays.
+    private func present(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        windows.forEach { $0.level = .statusBar }
+        defer { windows.forEach { $0.level = .screenSaver } }
+        NSApp.activate()
+        alert.window.level = .popUpMenu
+        return alert.runModal()
+    }
+
+    private func showFailure(_ title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        _ = present(alert)
+    }
+
+    func shareLink(_ rep: NSBitmapImageRep, screenRect: CGRect) {
+        guard !processing else { return }
+        let alert = NSAlert()
+        alert.messageText = "Загрузить снимок на Catbox?"
+        alert.informativeText = "PNG с пометками будет отправлен на catbox.moe и доступен каждому, у кого есть ссылка. Без аккаунта ShotMark не сможет удалить файл. Не публикуйте конфиденциальные данные."
+        alert.addButton(withTitle: "Загрузить и скопировать ссылку")
+        alert.addButton(withTitle: "Отмена")
+        guard present(alert) == .alertFirstButtonReturn else { return }
+        guard let png = rep.representation(using: .png, properties: [:]) else {
+            showFailure("Не удалось создать PNG", message: "Попробуйте выделить область заново.")
+            return
+        }
+        do {
+            let request = try LinkUploader.request(png: png)
+            setProcessing("Загрузка на Catbox… Esc — отменить")
+            // Ephemeral session: no shared cookies or disk cache for screenshots.
+            let network = URLSession(configuration: .ephemeral)
+            uploadTask = network.dataTask(with: request) { [weak self] data, response, error in
+                let result: Result<URL, Error> = Result {
+                    if let error { throw error }
+                    guard let data, let response else { throw LinkUploader.UploadError.invalidResponse }
+                    return try LinkUploader.link(data: data, response: response)
+                }
+                network.finishTasksAndInvalidate()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, CaptureSession.current === self else { return }
+                    self.uploadTask = nil
+                    self.setProcessing(nil)
+                    switch result {
+                    case .success(let url):
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                        NSPasteboard.general.setString(url.absoluteString, forType: .URL)
+                        self.close()
+                        self.restoreFocus()
+                        Toast.show("Ссылка скопирована в буфер обмена", around: screenRect)
+                    case .failure(let error):
+                        self.showFailure("Не удалось загрузить снимок", message: error.localizedDescription)
+                    }
+                }
+            }
+            uploadTask?.resume()
+        } catch {
+            showFailure("Не удалось загрузить снимок", message: error.localizedDescription)
+        }
+    }
+
+    func recognizeText(_ image: CGImage, screenRect: CGRect) {
+        guard !processing else { return }
+        setProcessing("Распознавание текста… Esc — отменить")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try TextRecognizer.recognize(image) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, CaptureSession.current === self else { return }
+                self.setProcessing(nil)
+                switch result {
+                case .success(let text) where !text.isEmpty:
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    self.close()
+                    self.restoreFocus()
+                    Toast.show("Текст скопирован в буфер обмена", around: screenRect)
+                case .success:
+                    self.showFailure("Текст не найден", message: "Попробуйте выделить область с более крупным и чётким текстом.")
+                case .failure(let error):
+                    self.showFailure("Не удалось распознать текст", message: error.localizedDescription)
+                }
+            }
+        }
+    }
 
     static func start(shots: [Shot], previousApp: NSRunningApplication?) {
         let session = CaptureSession(shots: shots, previousApp: previousApp)
@@ -40,6 +134,7 @@ final class CaptureSession: NSObject, NSSharingServicePickerDelegate {
 
     private init(shots: [Shot], previousApp: NSRunningApplication?) {
         self.previousApp = previousApp
+        super.init()
         for shot in shots {
             let window = OverlayWindow(screen: shot.screen)
             let size = shot.screen.frame.size
@@ -63,7 +158,6 @@ final class CaptureSession: NSObject, NSSharingServicePickerDelegate {
             windows.append(window)
             canvases.append(canvas)
         }
-        super.init()
     }
 
     private func show() {
@@ -180,6 +274,8 @@ final class CaptureSession: NSObject, NSSharingServicePickerDelegate {
     }
 
     private func close() {
+        uploadTask?.cancel()
+        uploadTask = nil
         for window in windows {
             window.orderOut(nil)
             window.contentView = nil

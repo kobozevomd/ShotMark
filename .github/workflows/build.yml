@@ -1,0 +1,17 @@
+name: Build and check
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal app (macOS 14+)
+        run: ./build.sh
+      - name: Check link protocol and native OCR
+        run: ./tools/check-features.sh
+      - name: Render smoke tests
+        run: |
+          build/ShotMark.app/Contents/MacOS/ShotMark --render-test build/render.png
+          build/ShotMark.app/Contents/MacOS/ShotMark --ui-test build/ui.png

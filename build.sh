@@ -14,7 +14,7 @@ for ARCH in arm64 x86_64; do
   swiftc -O -swift-version 5 \
     -target "$ARCH-apple-macos14.0" \
     -sdk "$(xcrun --show-sdk-path)" \
-    -framework AppKit -framework ScreenCaptureKit -framework Carbon -framework ServiceManagement \
+    -framework AppKit -framework ScreenCaptureKit -framework Carbon -framework ServiceManagement -framework Vision \
     Sources/*.swift \
     -o "build/ShotMark-$ARCH"
 done
